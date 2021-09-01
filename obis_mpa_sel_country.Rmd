@@ -1,4 +1,3 @@
-0
 ---
 title: "obis_mpa_sel_country"
 output:
@@ -65,15 +64,15 @@ convert_mpa_to_WKT <- function(x){
   st_as_text(st_convex_hull(st_geometry(x)))
 }
 
-get_datasets <- function(x){
-  get_one_dataset <- function(x, key){
-    robis::dataset(geometry=convert_mpa_to_WKT(x))
-  }
-  x %>% 
-    dplyr::rowwise() %>% 
-    dplyr::group_map(get_one_dataset, .keep=TRUE) %>% 
-    dplyr::bind_rows()
-}
+# get_datasets <- function(x){
+#   get_one_dataset <- function(x, key){
+#     robis::dataset(geometry=convert_mpa_to_WKT(x))
+#   }
+#   x %>% 
+#     dplyr::rowwise() %>% 
+#     dplyr::group_map(get_one_dataset, .keep=TRUE) %>% 
+#     dplyr::bind_rows()
+# }
 
 ##obis_rec <- get_datasets(country_mpa)
 ```
