@@ -1,5 +1,5 @@
 ---
-title: "test"
+title: "OBIS+Env within polygons"
 author: "eqmh"
 date: "9/1/2021"
 output: html_document
@@ -10,6 +10,9 @@ library(sf)
 library(leaflet)
 library(dplyr)
 library(ggplot2)
+library(readr)
+library(rerddap)
+library(mapdata)
 ```
 
 
@@ -20,9 +23,60 @@ dir_data  = here::here("data")
 dir_ply   = glue::glue("{dir_data}/ply")
 dir_ply
 
-# # First make sure the polygon files are available on '~/seascapeR/data_ss2/ply'. Then select polygon from the list contained in 'meow_ecos.shp' by changing the ECOREGION name.
+# # First make sure the polygon files are available on '~/data/ply'. Then select polygon from the list contained in 'meow_ecos.shp' by changing the ECO_CODE_X code.
 ply <- st_read("~/obis_sat_poly/data/ply/meow/meow_ecos.shp") %>% subset(ECO_CODE_X == "175", geometry) 
 ```
+
+
+## Extract maximum and minimum polygon coordinates
+
+```{r}
+bbox_list <- lapply(st_geometry(ply), st_bbox)
+maxmin <- as.data.frame(matrix(unlist(bbox_list),nrow=nrow(ply)))
+names(maxmin) <- names(bbox_list[[1]])
+```
+
+
+## Create a map of the latest SST data. 
+
+```{r, message=FALSE, warning=FALSE}
+# define geographic domain
+lat_lims<- c(maxmin$ymin, maxmin$ymax)  ## change the first and second value for desired minimum and maximum latitude.
+lon_lims <- c(maxmin$xmin, maxmin$xmax)  ## change the first and second value for desired minimum and maximum longitude.
+
+sstInfo <- info('jplMURSST41mday')
+# get latest composite sst
+GHRSST <- griddap(sstInfo, latitude = lat_lims, longitude = lon_lims, time = c('last','last'), fields = 'sst')
+
+mycolor <- colors$temperature
+sst_map <- map_data("worldHires", ylim = lat_lims, xlim = lon_lims)
+ggplot(data = GHRSST$data, aes(x = lon, y = lat, fill = sst)) + 
+  geom_polygon(data = sst_map, aes(x = long, y = lat, group = group), fill = "grey80") +
+  geom_raster(interpolate = FALSE) +
+  scale_fill_gradientn(colours = mycolor, na.value = NA) +
+  theme_bw() + ylab("latitude") + xlab("longitude") +
+  coord_fixed(1.1, xlim = lon_lims,  ylim = lat_lims) + ggtitle("Latest SST")
+```
+
+
+## Create a map of the latest CHL data. 
+
+```{r, message=FALSE, warning=FALSE}
+# define geographic domain
+chlaInfo <- info('nesdisVHNSQchlaMonthly')
+CHLA <- griddap(chlaInfo, latitude = lat_lims, longitude = lon_lims, time = c('last','last'), fields = 'chlor_a')
+
+# Map monthly chl (VIIRS)
+mycolor <- colors$chlorophyll
+chl_map <- map_data("worldHires", ylim = lat_lims, xlim = lon_lims)
+ggplot(data = CHLA$data, aes(x = lon, y = lat, fill = log(chlor_a))) + 
+  geom_polygon(data = chl_map, aes(x = long, y = lat, group = group), fill = "grey80") +
+  geom_raster(interpolate = FALSE) +
+  scale_fill_gradientn(colours = mycolor, na.value = NA) +
+  theme_bw() + ylab("latitude") + xlab("longitude") +
+  coord_fixed(1.3, xlim = lon_lims,  ylim = lat_lims) + ggtitle("Last month")
+```
+
 ## Extract occurence data from OBIS within MPAs for selected country (takes a long time for data rich MPAs!)
 
 ```{r obis}
@@ -51,9 +105,26 @@ df <- ply %>%
 ## Visualize occurrence records from OBIS for selected country (takes a long time for data rich MPAs!)
 
 ```{r}
+taxa_list <- unique(df$phylum)
+mollusca <- df %>% filter(phylum == taxa_list[1])
+annelida <- df %>% filter(phylum == taxa_list[2])
+plantae <- df %>% filter(phylum == taxa_list[3])
+echinodermata <- df %>% filter(phylum == taxa_list[4])
+
+colors <- c("#31a354", "#de2d26", "#2b8cbe", "#756bb1")
+labels <- c(taxa_list[1], taxa_list[2], taxa_list[3], taxa_list[4])
 leaflet() %>%
   addTiles("https://cartodb-basemaps-{s}.global.ssl.fastly.net/light_all/{z}/{x}/{y}.png") %>%
-  addCircleMarkers(lat = df$decimalLatitude, lng = df$decimalLongitude, radius = 5, weight = 0, fillOpacity = 1, fillColor = "#cc3300")
+  addPolygons(data = ply$geometry) %>%
+  addCircleMarkers(lat = mollusca$decimalLatitude, lng = mollusca$decimalLongitude, 
+                   radius = 5, weight = 0, fillColor = colors[1], fillOpacity = 1) %>%
+  addCircleMarkers(lat = annelida$decimalLatitude, lng = annelida$decimalLongitude, 
+                   radius = 5, weight = 0, fillColor = colors[2], fillOpacity = 1) %>%
+  addCircleMarkers(lat = plantae$decimalLatitude, lng = plantae$decimalLongitude, 
+                   radius = 5, weight = 0, fillColor = colors[3], fillOpacity = 1) %>%
+  addCircleMarkers(lat = echinodermata$decimalLatitude, lng = echinodermata$decimalLongitude, 
+                   radius = 5, weight = 0, fillColor = colors[4], fillOpacity = 1) %>%
+  addLegend(position = "topright", colors = colors, labels = labels)
 
 ```
 
@@ -69,7 +140,6 @@ leaflet() %>%
   theme(axis.text.x = element_text(size=14, angle=0), 
         axis.text.y = element_text(size=14, angle=0)))
 ```
- 
 
 ## Extracts OBIS records by looping through the list of geometries (e.g. MEOWs)
 
@@ -106,7 +176,7 @@ bins <- c(0, 1000, 10000, 100000, 200000, Inf)
 pal <- colorBin("YlOrRd", domain = ply_biome$records, bins = bins)
 
 leafletplot <- leaflet(data=ply_biome) %>% 
-  addProviderTiles(providers$Stamen.Watercolor, options = providerTileOptions(noWrap = TRUE)) %>% 
+  addTiles("https://cartodb-basemaps-{s}.global.ssl.fastly.net/light_all/{z}/{x}/{y}.png") %>% 
   addPolygons(
     popup = ~sprintf("%s, %s", ECO_CODE_X, records),
     fillColor = ~pal(records),
