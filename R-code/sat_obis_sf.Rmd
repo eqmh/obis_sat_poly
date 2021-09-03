@@ -1,9 +1,13 @@
 ---
 title: "OBIS+Env within polygons"
-author: "eqmh"
+author: "Enrique Montes (eqmh)"
 date: "9/1/2021"
 output: html_document
 ---
+
+```{r global options, include = FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE)
+```
 
 ```{r setup}
 library(sf)
@@ -13,10 +17,15 @@ library(ggplot2)
 library(readr)
 library(rerddap)
 library(mapdata)
+library(data.table)
+library(rerddapXtracto)
+library(lubridate)
+library(xts)
+library(dygraphs)
 ```
 
 
-```{r}
+```{r, echo=FALSE}
 # setting variables and paths allows for caching data files
 geometry = "meow" # or see: ?get_url_ply
 dir_data  = here::here("data")
@@ -28,7 +37,7 @@ ply <- st_read("~/obis_sat_poly/data/ply/meow/meow_ecos.shp") %>% subset(ECO_COD
 ```
 
 
-## Extract maximum and minimum polygon coordinates
+## Extract maximum and minimum polygon coordinates, and create list of lat lons of the selected geometry
 
 ```{r}
 bbox_list <- lapply(st_geometry(ply), st_bbox)
@@ -41,8 +50,19 @@ names(maxmin) <- names(bbox_list[[1]])
 
 ```{r, message=FALSE, warning=FALSE}
 # define geographic domain
-lat_lims<- c(maxmin$ymin, maxmin$ymax)  ## change the first and second value for desired minimum and maximum latitude.
-lon_lims <- c(maxmin$xmin, maxmin$xmax)  ## change the first and second value for desired minimum and maximum longitude.
+lat_lims<- c(maxmin$ymin, maxmin$ymax)  
+lon_lims <- c(maxmin$xmin, maxmin$xmax)  
+
+# define sub domain for SST time series
+box_size <- 0.5
+displacement <- 2
+
+lat_mean <- mean(lat_lims)  
+lon_mean <- mean(lon_lims) - displacement
+sub_lat <- c(lat_mean - box_size, lat_mean + box_size)
+sub_lon <- c(lon_mean - box_size, lon_mean + box_size)
+
+sub_ply <- data.frame(rbind(c(sub_lat[1], sub_lon[1]), c(sub_lat[1], sub_lon[2]), c(sub_lat[2], sub_lon[1]), c(sub_lat[2], sub_lon[2])))
 
 sstInfo <- info('jplMURSST41mday')
 # get latest composite sst
@@ -54,17 +74,58 @@ ggplot(data = GHRSST$data, aes(x = lon, y = lat, fill = sst)) +
   geom_polygon(data = sst_map, aes(x = long, y = lat, group = group), fill = "grey80") +
   geom_raster(interpolate = FALSE) +
   scale_fill_gradientn(colours = mycolor, na.value = NA) +
+  geom_rect(aes(xmin = sub_lon[1], xmax = sub_lon[2], ymin = sub_lat[1], ymax = sub_lat[2]), fill = NA, colour = "black") +
   theme_bw() + ylab("latitude") + xlab("longitude") +
   coord_fixed(1.1, xlim = lon_lims,  ylim = lat_lims) + ggtitle("Latest SST")
 ```
 
+## Download the SST time series from the sub domain defined above. 
+
+```{r, message=FALSE, warning=FALSE}
+
+SSTstartDate = "2010-01-01"
+
+SST_ts <- griddap(sstInfo, 
+              time=c(SSTstartDate, "last"),
+              longitude = sub_lon,
+              latitude = sub_lat,
+              fields = "sst",
+              fmt = "csv") %>% na.omit()
+
+#This is where we use the scary function. Important: you will have to change your parameter for your homework, when you will be looking at the anomaly data. 
+SST_ts_summ <- SST_ts %>% 
+  group_by(time) %>%
+  summarise(mean_sst = mean(sst))
+
+names(SST_ts_summ) <-  c("time", "SST")
+
+
+## convert time to a Data object
+SST_ts_summ$time = as.Date(ymd_hms(SST_ts_summ$time))
+
+```
+
+
+## Plot SST time series
+```{r, message=FALSE, warning=FALSE}
+SST.xts = as.xts(SST_ts_summ$SST, SST_ts_summ$time)
+dygraph(SST.xts, 
+        ylab = "Sea Surface Temperature (Deg C)") %>% 
+  dySeries("V1", label ="SST (Deg C)", color = "steelblue") %>%
+  dyHighlight(highlightCircleSize = 5, 
+              highlightSeriesBackgroundAlpha = 0.2,
+              hideOnMouseOut = FALSE) %>% 
+  dyOptions(fillGraph = FALSE, fillAlpha = 0.4) %>% 
+  dyRangeSelector(dateWindow = c(max(SST_ts_summ$time) - years(5), max(SST_ts_summ$time)))
+
+```
 
 ## Create a map of the latest CHL data. 
 
 ```{r, message=FALSE, warning=FALSE}
 # define geographic domain
-chlaInfo <- info('nesdisVHNSQchlaMonthly')
-CHLA <- griddap(chlaInfo, latitude = lat_lims, longitude = lon_lims, time = c('last','last'), fields = 'chlor_a')
+chlaInfo_monthly <- info('nesdisVHNSQchlaMonthly')
+CHLA <- griddap(chlaInfo_monthly, latitude = lat_lims, longitude = lon_lims, time = c('last','last'), fields = 'chlor_a')
 
 # Map monthly chl (VIIRS)
 mycolor <- colors$chlorophyll
@@ -73,11 +134,57 @@ ggplot(data = CHLA$data, aes(x = lon, y = lat, fill = log(chlor_a))) +
   geom_polygon(data = chl_map, aes(x = long, y = lat, group = group), fill = "grey80") +
   geom_raster(interpolate = FALSE) +
   scale_fill_gradientn(colours = mycolor, na.value = NA) +
+  geom_rect(aes(xmin = sub_lon[1], xmax = sub_lon[2], ymin = sub_lat[1], ymax = sub_lat[2]), fill = NA, colour = "black") +
   theme_bw() + ylab("latitude") + xlab("longitude") +
   coord_fixed(1.3, xlim = lon_lims,  ylim = lat_lims) + ggtitle("Last month")
 ```
 
-## Extract occurence data from OBIS within MPAs for selected country (takes a long time for data rich MPAs!)
+
+## Download the CHL time series from the sub domain defined above. 
+
+```{r, message=FALSE, warning=FALSE}
+
+chlaInfo_8day <- info('erdMH1chla8day')
+
+CHLstartDate = "2010-01-01"
+
+CHL_ts <- griddap(chlaInfo_8day, 
+              time=c(CHLstartDate, "last"),
+              longitude = sub_lon,
+              latitude = sub_lat,
+              fields = "chlorophyll",
+              fmt = "csv") %>% na.omit()
+
+#This is where we use the scary function. Important: you will have to change your parameter for your homework, when you will be looking at the anomaly data. 
+CHL_ts_summ <- CHL_ts %>% 
+  group_by(time) %>%
+  summarise(mean_chl = mean(chlorophyll))
+
+names(CHL_ts_summ) <-  c("time", "chl")
+
+
+## convert time to a Data object
+CHL_ts_summ$time = as.Date(ymd_hms(CHL_ts_summ$time))
+
+```
+
+
+## Plot CHL time series
+
+```{r, message=FALSE, warning=FALSE}
+CHL.xts = as.xts(CHL_ts_summ$chl, CHL_ts_summ$time)
+dygraph(CHL.xts, 
+        ylab = "Chlorophyll-a (mg m-3)") %>% 
+  dySeries("V1", label ="Chlorophyll-a (mg m-3)", color = "steelblue") %>%
+  dyHighlight(highlightCircleSize = 5, 
+              highlightSeriesBackgroundAlpha = 0.2,
+              hideOnMouseOut = FALSE) %>% 
+  dyOptions(fillGraph = FALSE, fillAlpha = 0.4) %>% 
+  dyRangeSelector(dateWindow = c(max(CHL_ts_summ$time) - years(5), max(CHL_ts_summ$time)))
+
+```
+
+## Extract occurence data from OBIS within geometry.
 
 ```{r obis}
 depth = 200
@@ -102,7 +209,7 @@ df <- ply %>%
 ```
 
 
-## Visualize occurrence records from OBIS for selected country (takes a long time for data rich MPAs!)
+## Creates a map of occurrence records from OBIS for selected geometry
 
 ```{r}
 taxa_list <- unique(df$phylum)
@@ -124,7 +231,7 @@ leaflet() %>%
                    radius = 5, weight = 0, fillColor = colors[3], fillOpacity = 1) %>%
   addCircleMarkers(lat = echinodermata$decimalLatitude, lng = echinodermata$decimalLongitude, 
                    radius = 5, weight = 0, fillColor = colors[4], fillOpacity = 1) %>%
-  addLegend(position = "topright", colors = colors, labels = labels)
+  leaflet::addLegend(position = "topright", colors = colors, labels = labels)
 
 ```
 
@@ -185,7 +292,7 @@ leafletplot <- leaflet(data=ply_biome) %>%
       color = "white",
       dashArray = "3",
       fillOpacity = 0.7) %>% 
-  addLegend(pal = pal, values = ~records, opacity = 0.7, title = NULL,
+  leaflet::addLegend(pal = pal, values = ~records, opacity = 0.7, title = NULL,
   position = "bottomright")
 leafletplot 
 ```
